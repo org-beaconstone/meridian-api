@@ -1,0 +1,107 @@
+openapi: 3.0.3
+info:
+  title: Meridian rehearsal API
+  version: 1.0.0
+  description: Fictional GBP ledger. See contract.md for detailed payloads. No real provider calls or authentication.
+servers:
+  - url: http://127.0.0.1:8080/api/v1
+paths:
+  /health:
+    get:
+      responses:
+        '200': { description: API is running }
+  /catalog:
+    get:
+      responses:
+        '200': { description: Fixed rehearsal date, recipients and two providers }
+  /state:
+    get:
+      parameters: [{ $ref: '#/components/parameters/Room' }]
+      responses:
+        '200': { description: Raw BankState with integer balance, transactions and budgets }
+        '400': { description: Invalid or missing room }
+  /payments:
+    post:
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,100}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recipientId, amountMinor, method]
+              properties:
+                recipientId: { type: string }
+                amountMinor: { type: integer, minimum: 1, maximum: 1000000 }
+                method: { type: string, enum: [card, bank] }
+                note: { type: string, maxLength: 200 }
+                scenario: { type: string, enum: [success, declined, unavailable, pending], default: success }
+      responses:
+        '200': { description: Completed with current state and receipt }
+        '202': { description: Pending confirmation, no debit, funds reserved }
+        '400': { description: Invalid request or insufficient available balance }
+        '409': { description: Same key with changed business payload }
+        '422': { description: Declined, no debit }
+        '503': { description: Simulated unavailable before authorization, no debit }
+  /budgets:
+    patch:
+      parameters: [{ $ref: '#/components/parameters/Room' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, limitMinor]
+              properties:
+                category: { type: string }
+                limitMinor: { type: integer, minimum: 1, maximum: 1000000 }
+      responses:
+        '200': { description: Updated state }
+  /reset:
+    post:
+      parameters: [{ $ref: '#/components/parameters/Room' }]
+      responses:
+        '200': { description: Reset selected room, intents and callbacks }
+  /events:
+    get:
+      parameters: [{ $ref: '#/components/parameters/Room' }]
+      responses:
+        '200': { description: Latest 100 synthetic audit events }
+  /webhooks/{provider}:
+    post:
+      description: Synthetic HMAC callback. Disabled without MERIDIAN_WEBHOOK_SECRET. Signature is lowercase SHA256 HMAC over timestamp plus dot plus exact raw body. Five-minute skew maximum.
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [adyen, worldpay] } }
+        - { name: X-Webhook-Timestamp, in: header, required: true, schema: { type: string } }
+        - { name: X-Meridian-Signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, eventId, paymentId, status]
+              properties:
+                sessionId: { type: string }
+                eventId: { type: string }
+                paymentId: { type: string }
+                status: { type: string, enum: [completed, declined] }
+      responses:
+        '200': { description: Applied exactly once, or duplicate accepted }
+        '400': { description: Unknown intent or invalid payload/provider }
+        '403': { description: Disabled or invalid signature/timestamp }
+        '409': { description: Changed event payload or terminal payment }
+components:
+  parameters:
+    Room:
+      name: X-Rehearsal-Session
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{3,64}$' }

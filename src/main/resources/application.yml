@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: meridian-api
+  datasource:
+    url: ${MERIDIAN_DB_URL:jdbc:h2:file:./data/meridian-connected}
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: false
+server:
+  address: ${MERIDIAN_BIND:127.0.0.1}
+  port: ${PORT:8080}
+  error:
+    include-message: never
+meridian:
+  webhook:
+    secret: ${MERIDIAN_WEBHOOK_SECRET:}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+logging:
+  level:
+    root: WARN

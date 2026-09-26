@@ -29,12 +29,14 @@ public class RehearsalBank {
   private final ObjectMapper json;
   private final FixtureService fixture;
   private final Map<String, PaymentProvider> providers;
+  private final CatalogRouting routing;
   private final String webhookSecret;
 
   public RehearsalBank(JdbcTemplate db, TransactionTemplate tx, ObjectMapper json, FixtureService fixture,
     List<PaymentProvider> providers, @Value("${meridian.webhook.secret:}") String secret) {
     this.db=db; this.tx=tx; this.json=json; this.fixture=fixture; this.webhookSecret=secret;
     this.providers=new HashMap<>(); providers.forEach(p -> this.providers.put(p.getProviderId(),p));
+    this.routing=new CatalogRouting(fixture.getProviders(), this.providers.keySet());
     db.execute("CREATE TABLE IF NOT EXISTS meridian_rooms (room VARCHAR(64) PRIMARY KEY, state_json CLOB NOT NULL)");
     db.execute("CREATE TABLE IF NOT EXISTS meridian_intents (payment_id VARCHAR(64) PRIMARY KEY, room VARCHAR(64) NOT NULL, client_key VARCHAR(100) NOT NULL, payload CLOB NOT NULL, phase VARCHAR(20) NOT NULL, provider VARCHAR(20) NOT NULL, amount BIGINT NOT NULL, UNIQUE(room,client_key))");
     db.execute("CREATE TABLE IF NOT EXISTS meridian_callbacks (room VARCHAR(64), provider VARCHAR(20), event_id VARCHAR(100), payload_hash VARCHAR(64) NOT NULL, PRIMARY KEY(room,provider,event_id))");
@@ -65,7 +67,7 @@ public class RehearsalBank {
   private List<Intent> intents(String sql,Object...args) { return db.query(sql,(r,n)->new Intent(r.getString("payment_id"),r.getString("room"),r.getString("client_key"),r.getString("payload"),r.getString("phase"),r.getString("provider"),r.getLong("amount")),args); }
   private Payment normalize(Payment p) {
     check(p!=null && p.amountMinor()!=null && p.amountMinor()>=1 && p.amountMinor()<=1000000,"Amount must be integer pence from 1 to 1000000");
-    check("card".equals(p.method()) || "bank".equals(p.method()),"Unknown payment method");
+    check(routing.supportsMethod(p.method()),"Unknown payment method");
     check(fixture.getRecipient(p.recipientId())!=null,"Unknown recipient");
     check(p.note()==null || p.note().length()<=200,"Reference exceeds 200 characters");
     String scenario=p.scenario()==null?"success":p.scenario();
@@ -85,7 +87,8 @@ public class RehearsalBank {
       return new Intent(old.id(),room,key,old.payload(),"prepared",old.provider(),old.amount());
     }
     if(state.getBalance()-reserved(room)<p.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
-    String id=UUID.randomUUID().toString(), provider=p.method().equals("card")?"adyen":"worldpay";
+    String id=UUID.randomUUID().toString(), provider=routing.providerIdForMethod(p.method());
+    check(provider!=null,"Unknown payment method");
     db.update("INSERT INTO meridian_intents(payment_id,room,client_key,payload,phase,provider,amount) VALUES(?,?,?,?,?,?,?)",id,room,key,payload(p),"submitting",provider,p.amountMinor());
     audit(room,"payment.prepared",id,provider);
     return new Intent(id,room,key,payload(p),"prepared",provider,p.amountMinor());

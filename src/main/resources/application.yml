@@ -17,6 +17,8 @@ server:
 meridian:
   webhook:
     secret: ${MERIDIAN_WEBHOOK_SECRET:}
+  return-state:
+    secret: ${MERIDIAN_RETURN_STATE_SECRET:meridian-rehearsal-return-state}
 management:
   endpoints:
     web:

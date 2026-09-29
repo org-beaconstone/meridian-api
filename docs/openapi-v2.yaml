@@ -1,0 +1,210 @@
+openapi: 3.0.3
+info:
+  title: Meridian payment method and intent API
+  version: 2026-09-18.1
+  description: |
+    Provider-neutral v2 contract. Integer GBP pence. Simulation only.
+    See docs/contract-v2.md. /api/v1 is a separate contract and is unchanged.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /api/v2/payment-methods:
+    get:
+      summary: Open payment method catalog
+      responses:
+        '200':
+          description: Catalog version, expiry, GBP integer currency metadata, and open method descriptors
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentMethodCatalog' }
+  /api/v2/payment-intents:
+    post:
+      summary: Create or replay a payment intent
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IntentRequest' }
+      responses:
+        '200':
+          description: Authoritative succeeded intent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '202':
+          description: Pending confirmation or still processing. No debit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400': { $ref: '#/components/responses/ClientError' }
+        '409':
+          description: Idempotency key reused with a different business payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Declined. No debit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '503':
+          description: Provider unavailable before authorization. Same key may be retried.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+  /api/v2/payment-intents/{id}:
+    get:
+      summary: Authoritative intent lifecycle
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9-]{1,64}$' }
+      responses:
+        '200':
+          description: Current lifecycle, action payload, and signed return state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400': { $ref: '#/components/responses/ClientError' }
+        '404':
+          description: No intent with this id in the session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+  parameters:
+    Room:
+      name: X-Rehearsal-Session
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{3,64}$' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,100}$' }
+  responses:
+    ClientError:
+      description: Invalid session, JSON, amount, method, or corridor
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Currency:
+      type: object
+      additionalProperties: false
+      required: [code, exponent, minorUnit, amountEncoding]
+      properties:
+        code: { type: string, enum: [GBP] }
+        exponent: { type: integer, enum: [2] }
+        minorUnit: { type: string, enum: [pence] }
+        amountEncoding: { type: string, enum: [integer] }
+    OpenDescriptor:
+      type: object
+      description: Provider is unbound. Clients must ignore unknown properties.
+      additionalProperties: true
+      required: [binding, method, corridors, flows]
+      properties:
+        binding: { type: string, enum: [open] }
+        method: { type: string, enum: [card, bank] }
+        corridors:
+          type: array
+          items: { type: string, enum: [UK, US] }
+        flows:
+          type: array
+          items: { type: string, enum: [fixed-uk-card, fixed-us-card, fixed-uk-bank, fixed-us-bank] }
+    PaymentMethod:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, descriptor]
+      properties:
+        id: { type: string, enum: [card, bank] }
+        displayName: { type: string, enum: [Debit card, Bank payment] }
+        descriptor: { $ref: '#/components/schemas/OpenDescriptor' }
+    PaymentMethodCatalog:
+      type: object
+      additionalProperties: false
+      required: [catalogVersion, expiresAt, currency, methods]
+      properties:
+        catalogVersion: { type: string, enum: ['2026-09-18.1'] }
+        expiresAt: { type: string, format: date-time, enum: ['2026-09-19T00:00:00Z'] }
+        currency: { $ref: '#/components/schemas/Currency' }
+        methods:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { $ref: '#/components/schemas/PaymentMethod' }
+    IntentRequest:
+      type: object
+      additionalProperties: false
+      required: [recipientId, amountMinor, method, corridor]
+      properties:
+        recipientId: { type: string }
+        amountMinor: { type: integer, minimum: 1, maximum: 1000000 }
+        method: { type: string, enum: [card, bank] }
+        corridor: { type: string, enum: [UK, US] }
+        note: { type: string, maxLength: 200 }
+        scenario: { type: string, enum: [success, declined, unavailable, pending], default: success }
+    ReturnState:
+      type: object
+      additionalProperties: false
+      required: [intentId, status, amountMinor, issuedAt, algorithm, signature]
+      properties:
+        intentId: { type: string }
+        status: { $ref: '#/components/schemas/Lifecycle' }
+        amountMinor: { type: integer }
+        issuedAt: { type: string, format: date-time }
+        algorithm: { type: string, enum: [HMAC-SHA256] }
+        signature: { type: string, pattern: '^[0-9a-f]{64}$' }
+    Action:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type: { type: string, enum: [complete, await_confirmation, terminal, retry] }
+        payload:
+          type: object
+          additionalProperties: true
+    Resolution:
+      type: object
+      additionalProperties: false
+      required: [flow, provider]
+      properties:
+        flow: { type: string, enum: [fixed-uk-card, fixed-us-card, fixed-uk-bank, fixed-us-bank] }
+        provider: { type: string, enum: [adyen, worldpay] }
+    Lifecycle:
+      type: string
+      enum: [processing, pending_confirmation, succeeded, declined, unavailable]
+    PaymentIntent:
+      type: object
+      required: [ok, code, id, status, authoritative, amountMinor, currency, method, corridor, recipientId, note, resolution, action, returnState, state]
+      properties:
+        ok: { type: boolean }
+        code: { type: string, enum: [PAYMENT_SUCCEEDED, PAYMENT_PENDING, PAYMENT_DECLINED, PROVIDER_UNAVAILABLE] }
+        error: { type: string }
+        id: { type: string }
+        status: { $ref: '#/components/schemas/Lifecycle' }
+        authoritative: { type: boolean, enum: [true] }
+        amountMinor: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        method: { type: string, enum: [card, bank] }
+        corridor: { type: string, enum: [UK, US] }
+        recipientId: { type: string }
+        note: { type: string }
+        resolution: { $ref: '#/components/schemas/Resolution' }
+        action: { $ref: '#/components/schemas/Action' }
+        returnState: { $ref: '#/components/schemas/ReturnState' }
+        state: { type: object, description: Current v1 BankState for the session }
+        transaction: { type: object, description: Present only when status is succeeded }
+    Error:
+      type: object
+      required: [ok, error, code]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        error: { type: string }
+        code: { type: string }

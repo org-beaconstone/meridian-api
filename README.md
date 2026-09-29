@@ -42,7 +42,7 @@ java -jar target/meridian-api-1.0.0.jar
 
 ## Implemented contract
 
-See [contract](docs/contract.md). Each client sends `X-Rehearsal-Session`; payment POSTs also send `Idempotency-Key`. Money is integer GBP pence. Raw `GET /state` returns the same state shape as the original web demo. Payment, budget, reset and reconciliation writes share one monitor held through transaction commit.
+See [contract](docs/contract.md) and the provider-neutral [v2 contract](docs/contract-v2.md). Each client sends `X-Rehearsal-Session`; payment POSTs also send `Idempotency-Key`. Money is integer GBP pence on v1 and v2. Raw `GET /state` returns the same state shape as the original web demo. `GET /api/v2/payment-methods` publishes catalog version, expiry, GBP currency metadata, and open method descriptors for the fixed UK and US flows. Payment intents expose an action payload, a signed return-state snapshot, and a lifecycle that `GET /api/v2/payment-intents/{id}` treats as authoritative. Payment, budget, reset and reconciliation writes share one monitor held through transaction commit.
 
 The server persists its own payment-intent ID before invoking the provider port. Known declined/unavailable simulations can retry with the same client key. Same key with changed business payload is rejected. Pending/submitting intents reserve spending capacity and cannot be resent blindly. Signed webhook completion appends the transaction and debits once. Reset clears only the selected room. `/events` exposes the latest synthetic audit entries.
 

@@ -1,5 +1,7 @@
 # Connected rehearsal contract v1
 
+The provider-neutral catalog and payment-intent contract is [contract v2](contract-v2.md). v1 payloads below stay in place.
+
 All amounts are integer GBP pence. No real provider calls. Base path `/api/v1`. JSON UTF-8. Server state is authoritative and scoped by `X-Rehearsal-Session` (3-64 URL-safe ASCII letters/digits/underscore/hyphen). Session IDs isolate fictional rehearsal state, not authentication. Default clients use a user-visible `meridian-rehearsal` room. Missing/invalid session on stateful endpoints returns 400. Health/catalog do not require session.
 
 ## Endpoints

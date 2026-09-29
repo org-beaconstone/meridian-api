@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class LedgerPersistenceTest {
   private RehearsalBank bank(String url,String secret) {
     var ds=new DriverManagerDataSource(url,"sa","");var mapper=new ObjectMapper();
-    return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),mapper,new FixtureService(mapper),List.of(new AdyenProvider(),new WorldpayProvider()),secret);
+    return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),mapper,new FixtureService(mapper),List.of(new AdyenProvider(),new WorldpayProvider()),new PaymentFlowCatalog(),new ReturnStateSigner("meridian-rehearsal-return-state"),secret);
   }
   @Test void preservesLedgerAndIdempotencyAfterReopeningFileDatabase() throws Exception {
     var dir=Files.createTempDirectory(Path.of("target"),"tmp_rovo_persist_");String url="jdbc:h2:file:"+dir.resolve("bank").toAbsolutePath();

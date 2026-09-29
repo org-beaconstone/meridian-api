@@ -21,19 +21,24 @@ import java.util.function.Supplier;
 @Service
 public class RehearsalBank {
   public record Payment(String recipientId, Long amountMinor, String method, String note, String scenario) {}
+  public record IntentRequest(String recipientId, Long amountMinor, String method, String corridor, String note, String scenario) {}
   public record Limit(String category, Long limitMinor) {}
   public record Callback(String sessionId, String eventId, String paymentId, String status) {}
   private record Intent(String id, String room, String key, String payload, String status, String provider, long amount) {}
+  private record Stored(Payment payment, String corridor) {}
   private final JdbcTemplate db;
   private final TransactionTemplate tx;
   private final ObjectMapper json;
   private final FixtureService fixture;
   private final Map<String, PaymentProvider> providers;
+  private final PaymentFlowCatalog catalog;
+  private final ReturnStateSigner returnState;
   private final String webhookSecret;
 
   public RehearsalBank(JdbcTemplate db, TransactionTemplate tx, ObjectMapper json, FixtureService fixture,
-    List<PaymentProvider> providers, @Value("${meridian.webhook.secret:}") String secret) {
-    this.db=db; this.tx=tx; this.json=json; this.fixture=fixture; this.webhookSecret=secret;
+    List<PaymentProvider> providers, PaymentFlowCatalog catalog, ReturnStateSigner returnState,
+    @Value("${meridian.webhook.secret:}") String secret) {
+    this.db=db; this.tx=tx; this.json=json; this.fixture=fixture; this.catalog=catalog; this.returnState=returnState; this.webhookSecret=secret;
     this.providers=new HashMap<>(); providers.forEach(p -> this.providers.put(p.getProviderId(),p));
     db.execute("CREATE TABLE IF NOT EXISTS meridian_rooms (room VARCHAR(64) PRIMARY KEY, state_json CLOB NOT NULL)");
     db.execute("CREATE TABLE IF NOT EXISTS meridian_intents (payment_id VARCHAR(64) PRIMARY KEY, room VARCHAR(64) NOT NULL, client_key VARCHAR(100) NOT NULL, payload CLOB NOT NULL, phase VARCHAR(20) NOT NULL, provider VARCHAR(20) NOT NULL, amount BIGINT NOT NULL, UNIQUE(room,client_key))");
@@ -72,23 +77,32 @@ public class RehearsalBank {
     check(Set.of("success","declined","unavailable","pending").contains(scenario),"Unknown simulation scenario");
     return new Payment(p.recipientId(),p.amountMinor(),p.method(),p.note()==null?"":p.note(),scenario);
   }
-  private String payload(Payment p) { return encode(List.of(p.recipientId(),p.amountMinor(),p.method(),p.note())); }
+  private String payload(Payment p,String corridor,boolean v2) {
+    return v2 ? encode(List.of(p.recipientId(),p.amountMinor(),p.method(),p.note(),corridor,"v2"))
+      : encode(List.of(p.recipientId(),p.amountMinor(),p.method(),p.note()));
+  }
+  private Stored stored(Intent intent) {
+    var tuple=decode(intent.payload(),List.class);
+    String corridor=tuple.size()>=5?String.valueOf(tuple.get(4)):"UK";
+    var payment=new Payment((String)tuple.get(0),((Number)tuple.get(1)).longValue(),(String)tuple.get(2),(String)tuple.get(3),"success");
+    return new Stored(payment,corridor);
+  }
   private long reserved(String room) { Long value=db.queryForObject("SELECT COALESCE(SUM(amount),0) FROM meridian_intents WHERE room=? AND phase IN ('submitting','pending')",Long.class,room); return value==null?0:value; }
-  private Intent prepare(String room,String key,Payment p) {
-    var state=read(room); var rows=intents("SELECT * FROM meridian_intents WHERE room=? AND client_key=?",room,key);
+  private Intent prepare(String room,String key,Payment p,String corridor,String provider,boolean v2) {
+    var state=read(room); var body=payload(p,corridor,v2); var rows=intents("SELECT * FROM meridian_intents WHERE room=? AND client_key=?",room,key);
     if(!rows.isEmpty()) {
       var old=rows.getFirst();
-      if(!old.payload().equals(payload(p))) throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key belongs to a different payment");
+      if(!old.payload().equals(body)) throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key belongs to a different payment");
       if(Set.of("completed","pending","submitting","declined-final").contains(old.status())) return old;
       if(state.getBalance()-reserved(room)<p.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
       db.update("UPDATE meridian_intents SET phase='submitting' WHERE payment_id=?",old.id());
       return new Intent(old.id(),room,key,old.payload(),"prepared",old.provider(),old.amount());
     }
     if(state.getBalance()-reserved(room)<p.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
-    String id=UUID.randomUUID().toString(), provider=p.method().equals("card")?"adyen":"worldpay";
-    db.update("INSERT INTO meridian_intents(payment_id,room,client_key,payload,phase,provider,amount) VALUES(?,?,?,?,?,?,?)",id,room,key,payload(p),"submitting",provider,p.amountMinor());
+    String id=UUID.randomUUID().toString();
+    db.update("INSERT INTO meridian_intents(payment_id,room,client_key,payload,phase,provider,amount) VALUES(?,?,?,?,?,?,?)",id,room,key,body,"submitting",provider,p.amountMinor());
     audit(room,"payment.prepared",id,provider);
-    return new Intent(id,room,key,payload(p),"prepared",provider,p.amountMinor());
+    return new Intent(id,room,key,body,"prepared",provider,p.amountMinor());
   }
   private Map<String,Object> pending(String id) { return Map.of("ok",false,"error","Payment pending confirmation. Do not create another payment.","code","PAYMENT_PENDING","paymentId",id); }
   private Map<String,Object> completed(Intent intent) {
@@ -105,22 +119,85 @@ public class RehearsalBank {
   }
   public synchronized Map<String,Object> payment(String room,String key,Payment input) {
     room(room); check(key!=null && key.matches("[A-Za-z0-9_-]{1,100}"),"Invalid Idempotency-Key"); var p=normalize(input);
+    var resolution=catalog.resolve(p.method(),"UK");
+    return execute(room,key,p,resolution.corridor(),resolution.provider(),false);
+  }
+  public synchronized Map<String,Object> createIntent(String room,String key,IntentRequest input) {
+    room(room); check(key!=null && key.matches("[A-Za-z0-9_-]{1,100}"),"Invalid Idempotency-Key");
+    check(input!=null && input.corridor()!=null && !input.corridor().isBlank(),"Corridor is required");
+    var resolution=catalog.resolve(input.method(),input.corridor());
+    var p=normalize(new Payment(input.recipientId(),input.amountMinor(),input.method(),input.note(),input.scenario()));
+    return execute(room,key,p,resolution.corridor(),resolution.provider(),true);
+  }
+  public synchronized Map<String,Object> readIntent(String room,String id) {
+    room(room); check(id!=null && id.matches("[A-Za-z0-9-]{1,64}"),"Invalid payment intent id");
+    return atomic(()->{
+      var rows=intents("SELECT * FROM meridian_intents WHERE payment_id=? AND room=?",id,room);
+      if(rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Unknown payment intent");
+      return view(rows.getFirst());
+    });
+  }
+  private Map<String,Object> execute(String room,String key,Payment p,String corridor,String provider,boolean v2) {
     // Commit intent before sending to a provider. Keep the same monitor across both commits.
-    Intent intent=atomic(()->prepare(room,key,p));
-    if(intent.status().equals("completed")) return atomic(()->completed(intent));
-    if(Set.of("pending","submitting").contains(intent.status())) return pending(intent.id());
-    if(intent.status().equals("declined-final")) return fail("PAYMENT_DECLINED","Payment was declined by reconciliation");
+    Intent intent=atomic(()->prepare(room,key,p,corridor,provider,v2));
+    if(intent.status().equals("completed")) return atomic(()->v2?view(intent):completed(intent));
+    if(Set.of("pending","submitting").contains(intent.status())) return v2?atomic(()->view(intent)):pending(intent.id());
+    if(intent.status().equals("declined-final")) return v2?atomic(()->view(intent)):fail("PAYMENT_DECLINED","Payment was declined by reconciliation");
     PaymentProvider.Outcome outcome;
-    try { outcome=providers.get(intent.provider()).authorize(intent.id(),p.scenario(),"UK"); }
+    try { outcome=providers.get(intent.provider()).authorize(intent.id(),p.scenario(),corridor); }
     catch(RuntimeException e) { outcome=PaymentProvider.Outcome.PENDING; }
     final var result=outcome;
     return atomic(()->{
-      if(result==PaymentProvider.Outcome.SUCCESS) { debit(intent,p); return completed(intent); }
+      if(result==PaymentProvider.Outcome.SUCCESS) { debit(intent,p); return v2?view(reload(intent.id())):completed(intent); }
       String phase=result==PaymentProvider.Outcome.PENDING?"pending":result==PaymentProvider.Outcome.DECLINED?"declined":"unavailable";
       db.update("UPDATE meridian_intents SET phase=? WHERE payment_id=?",phase,intent.id()); audit(room,"payment."+phase,intent.id(),intent.provider());
+      if(v2) return view(reload(intent.id()));
       if(result==PaymentProvider.Outcome.PENDING) return pending(intent.id());
       return fail(result==PaymentProvider.Outcome.DECLINED?"PAYMENT_DECLINED":"PROVIDER_UNAVAILABLE",result==PaymentProvider.Outcome.DECLINED?"Payment declined. No debit was made.":"Provider unavailable before authorization. No debit was made.");
     });
+  }
+  private Intent reload(String id) { return intents("SELECT * FROM meridian_intents WHERE payment_id=?",id).getFirst(); }
+  private String lifecycle(String phase) {
+    return switch(phase) {
+      case "completed" -> "succeeded";
+      case "pending" -> "pending_confirmation";
+      case "declined","declined-final" -> "declined";
+      case "unavailable" -> "unavailable";
+      default -> "processing";
+    };
+  }
+  private Map<String,Object> view(Intent intent) {
+    var stored=stored(intent); String status=lifecycle(intent.status()); var state=read(intent.room());
+    Transaction txn="succeeded".equals(status)?state.getTransactions().stream().filter(t->t.getId().equals(intent.id())).findFirst().orElseThrow():null;
+    var resolution=catalog.resolve(stored.payment().method(),stored.corridor());
+    var body=new LinkedHashMap<String,Object>();
+    body.put("ok","succeeded".equals(status));
+    body.put("code",switch(status) { case "succeeded"->"PAYMENT_SUCCEEDED"; case "declined"->"PAYMENT_DECLINED"; case "unavailable"->"PROVIDER_UNAVAILABLE"; default->"PAYMENT_PENDING"; });
+    if(!"succeeded".equals(status)) body.put("error",switch(intent.status()) {
+      case "declined-final"->"Payment was declined by reconciliation";
+      case "declined"->"Payment declined. No debit was made.";
+      case "unavailable"->"Provider unavailable before authorization. No debit was made.";
+      default->"Payment pending confirmation. Do not create another payment.";
+    });
+    body.put("id",intent.id()); body.put("status",status); body.put("authoritative",true);
+    body.put("amountMinor",intent.amount()); body.put("currency",catalog.currency());
+    body.put("method",stored.payment().method()); body.put("corridor",stored.corridor());
+    body.put("recipientId",stored.payment().recipientId()); body.put("note",stored.payment().note());
+    body.put("resolution",Map.of("flow",resolution.flow(),"provider",intent.provider()));
+    body.put("action",action(status,intent,txn));
+    body.put("returnState",returnState.sign(intent.id(),status,intent.amount()));
+    body.put("state",state);
+    if(txn!=null) body.put("transaction",txn);
+    return body;
+  }
+  private Map<String,Object> action(String status,Intent intent,Transaction txn) {
+    return switch(status) {
+      case "succeeded" -> Map.of("type","complete","payload",Map.of("transactionId",txn.getId(),"reference",txn.getReference(),"retryable",false));
+      case "declined" -> Map.of("type","terminal","payload",Map.of("code","PAYMENT_DECLINED","final","declined-final".equals(intent.status()),"retryable",false));
+      case "unavailable" -> Map.of("type","retry","payload",Map.of("code","PROVIDER_UNAVAILABLE","retryable",true,"sameIdempotencyKey",true));
+      case "processing" -> Map.of("type","await_confirmation","payload",Map.of("paymentId",intent.id(),"retryable",false,"instruction","Payment is still processing. Do not create another payment."));
+      default -> Map.of("type","await_confirmation","payload",Map.of("paymentId",intent.id(),"retryable",false,"instruction","Do not create another payment."));
+    };
   }
   public synchronized Map<String,Object> webhook(String provider,String timestamp,String signature,String raw) {
     if(webhookSecret.isBlank()) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Webhook simulation is disabled");

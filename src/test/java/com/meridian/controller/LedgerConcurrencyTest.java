@@ -10,7 +10,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 class LedgerConcurrencyTest {
-  private RehearsalBank bank(){var ds=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1","sa","");var json=new ObjectMapper();return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),json,new FixtureService(json),List.of(new AdyenProvider(),new WorldpayProvider()),"");}
+  private RehearsalBank bank(){var ds=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1","sa","");var json=new ObjectMapper();return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),json,new FixtureService(json),List.of(new AdyenProvider(),new WorldpayProvider()),new PaymentFlowCatalog(),new ReturnStateSigner("meridian-rehearsal-return-state"),"");}
   @Test void exactlyOneOverspendingConcurrentPaymentSucceeds() throws Exception {
     var bank=bank();try(var pool=Executors.newFixedThreadPool(2)){
       var gate=new CountDownLatch(1);List<Future<Boolean>> results=new ArrayList<>();

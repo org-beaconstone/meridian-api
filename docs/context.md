@@ -24,4 +24,4 @@ Payments Platform, Trust & Safety and Growth Engineering appear in the source pa
 
 ## Implementation versus story
 
-The browser rehearsal maps card to Adyen and bank payment to Worldpay for a simple visible two-choice flow. It does not claim to implement the story's production acquiring/failover arrangements. Adapters simulate outcomes. No real authentication, vendor requests, automatic fallback, SCA or circuit breakers are claimed. Native configuration intentionally still hardcodes two providers, preserving the mobile gap.
+The browser rehearsal maps card to Adyen and bank payment to Worldpay for a simple visible two-choice flow. It does not claim to implement the story's production acquiring/failover arrangements. Adapters simulate outcomes. Simulated per-corridor circuit breakers and Prometheus series exist for UK, US and EU. An open lane returns a degraded status and does not call the other provider. No real authentication, vendor requests, automatic cross-provider fallback or SCA challenge is claimed. Native configuration intentionally still hardcodes two providers, preserving the mobile gap.

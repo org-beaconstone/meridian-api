@@ -1,7 +1,11 @@
 package com.meridian.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meridian.observability.PaymentMetrics;
+import com.meridian.resilience.CircuitBreakerSettings;
+import com.meridian.resilience.CorridorCircuitBreaker;
 import com.meridian.service.*;
 import com.meridian.payment.*;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
@@ -10,7 +14,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 class LedgerConcurrencyTest {
-  private RehearsalBank bank(){var ds=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1","sa","");var json=new ObjectMapper();return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),json,new FixtureService(json),List.of(new AdyenProvider(),new WorldpayProvider()),"");}
+  private RehearsalBank bank(){var ds=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1","sa","");var json=new ObjectMapper();var breakers=new CorridorCircuitBreaker(new CircuitBreakerSettings(0.05,60,20,30));return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),json,new FixtureService(json),List.of(new AdyenProvider(),new WorldpayProvider()),"",new PaymentMetrics(new SimpleMeterRegistry(),breakers),breakers);}
   @Test void exactlyOneOverspendingConcurrentPaymentSucceeds() throws Exception {
     var bank=bank();try(var pool=Executors.newFixedThreadPool(2)){
       var gate=new CountDownLatch(1);List<Future<Boolean>> results=new ArrayList<>();

@@ -17,11 +17,29 @@ server:
 meridian:
   webhook:
     secret: ${MERIDIAN_WEBHOOK_SECRET:}
+  circuit-breaker:
+    error-rate-threshold: 0.05
+    window-seconds: 60
+    min-samples: 20
+    open-cooldown-seconds: 30
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus,metrics
+  endpoint:
+    health:
+      show-details: never
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: meridian-api
+    distribution:
+      percentiles-histogram:
+        payment.authorization: true
+      slo:
+        payment.authorization: 800ms
 logging:
   level:
     root: WARN

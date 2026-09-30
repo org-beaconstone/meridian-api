@@ -1,0 +1,161 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "text",
+      "title": "Rehearsal scope",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Simulated Adyen and Worldpay only. Amounts stay integer GBP pence. An open EU circuit disables that provider's EUR option and tells the client to fall back to the UK corridor. The API does not call the other provider after an ambiguous outcome."
+      }
+    },
+    {
+      "type": "stat",
+      "title": "API availability 99.95%",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0.99,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.9995 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/api/v1/.*\",status!~\"5..\"}[5m])) / sum(rate(http_server_requests_seconds_count{uri=~\"/api/v1/.*\"}[5m]))",
+          "legendFormat": "availability"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p95 authorization latency (800ms SEPA Instant SLO)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(payment_authorization_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "payment_submissions_total by corridor and provider",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (corridor, provider, outcome) (rate(payment_submissions_total[5m]))",
+          "legendFormat": "{{provider}} {{corridor}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "sca_step_up_success_rate (alert below 92%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.92 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sca_step_up_success_rate",
+          "legendFormat": "{{provider}} {{corridor}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "circuit_breaker_state (0 closed, 1 open, 2 half-open)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "min": 0, "max": 2 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "circuit_breaker_state",
+          "legendFormat": "{{provider}} {{corridor}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider timeout ratio over 5 minutes (alert above 1.5%)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.015 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (corridor, provider) (rate(payment_provider_timeouts_total[5m])) / sum by (corridor, provider) (rate(payment_submissions_total[5m]))",
+          "legendFormat": "{{provider}} {{corridor}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["meridian", "payments", "slo"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Meridian payment SLOs",
+  "uid": "meridian-sepa-slo",
+  "version": 1
+}

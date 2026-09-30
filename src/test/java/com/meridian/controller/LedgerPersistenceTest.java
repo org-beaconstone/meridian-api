@@ -1,7 +1,11 @@
 package com.meridian.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meridian.observability.PaymentMetrics;
+import com.meridian.resilience.CircuitBreakerSettings;
+import com.meridian.resilience.CorridorCircuitBreaker;
 import com.meridian.service.*;
 import com.meridian.payment.*;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -13,7 +17,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class LedgerPersistenceTest {
   private RehearsalBank bank(String url,String secret) {
     var ds=new DriverManagerDataSource(url,"sa","");var mapper=new ObjectMapper();
-    return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),mapper,new FixtureService(mapper),List.of(new AdyenProvider(),new WorldpayProvider()),secret);
+    var breakers=new CorridorCircuitBreaker(new CircuitBreakerSettings(0.05,60,20,30));
+    return new RehearsalBank(new JdbcTemplate(ds),new TransactionTemplate(new DataSourceTransactionManager(ds)),mapper,new FixtureService(mapper),List.of(new AdyenProvider(),new WorldpayProvider()),secret,new PaymentMetrics(new SimpleMeterRegistry(),breakers),breakers);
   }
   @Test void preservesLedgerAndIdempotencyAfterReopeningFileDatabase() throws Exception {
     var dir=Files.createTempDirectory(Path.of("target"),"tmp_rovo_persist_");String url="jdbc:h2:file:"+dir.resolve("bank").toAbsolutePath();

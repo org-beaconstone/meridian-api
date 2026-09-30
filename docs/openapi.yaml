@@ -49,6 +49,41 @@ paths:
         '409': { description: Same key with changed business payload }
         '422': { description: Declined, no debit }
         '503': { description: Simulated unavailable before authorization, no debit }
+  /payments/auth:
+    post:
+      description: Simulated step-up authorization against the in-process Adyen or Worldpay sandbox. Does not call a remote gateway and does not dispatch a second provider.
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,100}$' }
+        - name: X-Trace-Id
+          in: header
+          required: false
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{8,64}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recipientId, amountMinor, method, corridor, scaToken]
+              properties:
+                recipientId: { type: string }
+                amountMinor: { type: integer, minimum: 1, maximum: 1000000 }
+                method: { type: string, enum: [card, bank] }
+                note: { type: string, maxLength: 200 }
+                corridor: { type: string, enum: ['UK', 'US', 'EU', 'DE', 'FR', 'NL', 'IE', 'ES', 'IT', 'BE', 'AT', 'PT', 'FI', 'SE', 'DK', 'PL', 'LU', 'NO'] }
+                scenario: { type: string, enum: [success, soft_decline, hard_decline, ambiguous, unknown_code], default: success }
+                scaToken: { type: string }
+      responses:
+        '200': { description: Sandbox settlement, intent SUCCEEDED, single debit }
+        '400': { description: Invalid request, step-up token, or insufficient available balance }
+        '409': { description: Same key with changed business payload }
+        '422': { description: Soft decline, hard decline, or failed step-up challenge. No debit }
+        '503': { description: Ambiguous sandbox outcome left PROCESSING. No debit and no provider fallback }
   /budgets:
     patch:
       parameters: [{ $ref: '#/components/parameters/Room' }]

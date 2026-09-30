@@ -46,6 +46,8 @@ See [contract](docs/contract.md). Each client sends `X-Rehearsal-Session`; payme
 
 The server persists its own payment-intent ID before invoking the provider port. Known declined/unavailable simulations can retry with the same client key. Same key with changed business payload is rejected. Pending/submitting intents reserve spending capacity and cannot be resent blindly. Signed webhook completion appends the transaction and debits once. Reset clears only the selected room. `/events` exposes the latest synthetic audit entries.
 
+`POST /api/v1/payments/auth` is a separate simulated step-up for rehearsal clients. It checks a fixture `scaToken`, persists `PROCESSING`, then settles or fails through the in-process Adyen or Worldpay sandbox. European corridors use the Adyen adapter as a rehearsal assumption. Soft declines are classified as failover-eligible and are not sent to the paired provider. Ambiguous results stay `PROCESSING`, keep the reservation, and are never retried against another provider. Audit entries for that flow include a trace ID and do not include the token.
+
 ## Synthetic webhooks
 
 Disabled unless `MERIDIAN_WEBHOOK_SECRET` is set. Never use a production provider secret. The test signature is HMAC-SHA256 over `timestamp + '.' + exact raw body`, with a five-minute window. It is a Meridian simulation protocol, not either vendor's real signing protocol. Create a pending intent before sending a completion callback. See [webhook helper](scripts/webhook.py).
@@ -54,6 +56,6 @@ Disabled unless `MERIDIAN_WEBHOOK_SECRET` is set. Never use a production provide
 
 [Existing source documents](docs/context.md) are authoritative demo story context. Confluence pages were read; the supplied Google Docs are linked but their contents could not be fetched with current access. No external document or Jira record was modified.
 
-No real auth, SCA, KYC, settlement, vendor SDK, automatic provider fallback or operational circuit breaker is implemented. There is no card-data collection. A room ID is not authentication. The API is for trusted local rehearsals; do not expose it directly to the public internet. State and journal persist locally without application-level encryption or retention automation.
+No real authentication, vendor SCA, KYC, settlement, vendor SDK, automatic provider fallback or operational circuit breaker is implemented. Step-up tokens on `/payments/auth` are local fixtures. There is no card-data collection. A room ID is not authentication. The API is for trusted local rehearsals; do not expose it directly to the public internet. State and journal persist locally without application-level encryption or retention automation.
 
 The existing [Kaizen site](https://meridian-money.kaizen.shared.atlassian-3p.com/) remains the standalone web simulation, not a hosted Java backend. See [connected rehearsal](docs/connected-rehearsal.md) and [verification](docs/verification.md).

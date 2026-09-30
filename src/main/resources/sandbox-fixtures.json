@@ -1,0 +1,26 @@
+{
+  "scaTokens": {
+    "sca_ok_demo": { "outcome": "AUTHENTICATED", "flow": "FRICTIONLESS" },
+    "sca_challenge_ok": { "outcome": "AUTHENTICATED", "flow": "CHALLENGE" },
+    "sca_challenge_fail": { "outcome": "CHALLENGE_FAILED", "flow": "CHALLENGE" },
+    "sca_expired": { "outcome": "EXPIRED", "flow": "CHALLENGE" }
+  },
+  "providers": {
+    "adyen": {
+      "settledCode": "SANDBOX_00",
+      "softCodes": ["51", "65", "91"],
+      "hardCodes": ["05", "14", "41", "43", "54"],
+      "softScenarioCode": "51",
+      "hardScenarioCode": "05",
+      "unknownScenarioCode": "999"
+    },
+    "worldpay": {
+      "settledCode": "SANDBOX_AUTHORISED",
+      "softCodes": ["INSUFFICIENT_FUNDS", "SCA_SOFT_DECLINE"],
+      "hardCodes": ["REFUSED", "LOST_CARD", "STOLEN_CARD"],
+      "softScenarioCode": "INSUFFICIENT_FUNDS",
+      "hardScenarioCode": "REFUSED",
+      "unknownScenarioCode": "UNMAPPED"
+    }
+  }
+}

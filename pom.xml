@@ -49,6 +49,16 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- Actuator + Prometheus. Rehearsal metrics only; no vendor export. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- SpringDoc OpenAPI (Swagger) -->
         <dependency>
             <groupId>org.springdoc</groupId>

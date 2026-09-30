@@ -15,7 +15,7 @@ Alternatively, `docker compose up --build` starts the supplied three-container t
 5. Change mobile to a different room. Its fresh balance is £12,480.50 while web retains the original room state.
 6. Rejoin the same room to share changes again. A reset affects every client in that room, with a confirmation prompt.
 
-Payment outcomes are selected in rehearsal controls, not encoded as magic amounts. There is no provider fallback hidden behind a particular amount.
+Payment outcomes are selected in rehearsal controls, not encoded as magic amounts. There is no provider fallback hidden behind a particular amount. An open simulated circuit returns a degraded status for that provider and corridor instead of sending the payment to the other provider.
 
 ## Native surfaces
 

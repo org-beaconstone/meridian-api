@@ -14,6 +14,6 @@ Verified 19 September 2026 on macOS, Java21, Node26 and Swift6.2.3.
 
 - No iOS simulator/device or Android APK build: full Xcode/Android SDK unavailable. Android Compose source and iOS XcodeGen definition are supplied, not device-certified.
 - Docker Compose validated structurally but containers were not started because Docker daemon was unavailable. Java/Vite processes were used for the combined browser test.
-- No real payment-provider integration, production auth, SCA, KYC, automatic cross-provider fallback or operational circuit breakers.
+- No real payment-provider integration, production auth, SCA challenge, KYC or automatic cross-provider fallback. Simulated corridor circuit breakers, Prometheus metrics, alert rules and a Grafana SLO dashboard are part of the API.
 - Existing Kaizen deployment stays standalone. Java API is not claimed to run there.
 - Google working docs could not be read through current access. Four supplied Confluence pages were read; six existing sources are linked, no duplicates published.

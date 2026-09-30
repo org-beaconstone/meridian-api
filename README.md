@@ -54,6 +54,10 @@ Disabled unless `MERIDIAN_WEBHOOK_SECRET` is set. Never use a production provide
 
 [Existing source documents](docs/context.md) are authoritative demo story context. Confluence pages were read; the supplied Google Docs are linked but their contents could not be fetched with current access. No external document or Jira record was modified.
 
-No real auth, SCA, KYC, settlement, vendor SDK, automatic provider fallback or operational circuit breaker is implemented. There is no card-data collection. A room ID is not authentication. The API is for trusted local rehearsals; do not expose it directly to the public internet. State and journal persist locally without application-level encryption or retention automation.
+No real auth, SCA challenge, KYC, settlement or vendor SDK is implemented. Simulated Prometheus metrics, alert rules and per-corridor circuit breakers are. A tripped lane returns `PROVIDER_DEGRADED` and does not call the other provider. There is no card-data collection. A room ID is not authentication. The API is for trusted local rehearsals; do not expose it directly to the public internet. State and journal persist locally without application-level encryption or retention automation.
+
+## Operational signals
+
+`/actuator/prometheus` exports `payment_submissions_total`, `sca_step_up_success_rate` and `circuit_breaker_state` with `corridor` and `provider` labels. Lanes are Adyen and Worldpay across UK, US and EU. A lane opens above a 5% error rate in a rolling minute (minimum 20 samples). An open EU lane disables that EUR option, returns HTTP 503, and names the UK corridor as the client fallback. Alert rules live in `ops/prometheus/alerts.yml` (SCA below 92% sustained for 5 minutes, provider timeouts above 1.5% over 5 minutes). `ops/grafana/meridian-sepa-slo.json` tracks 99.95% API availability and p95 authorization latency against the 800ms SEPA Instant SLO. Scrape config is `ops/prometheus/prometheus.yml`. These signals are rehearsal-only.
 
 The existing [Kaizen site](https://meridian-money.kaizen.shared.atlassian-3p.com/) remains the standalone web simulation, not a hosted Java backend. See [connected rehearsal](docs/connected-rehearsal.md) and [verification](docs/verification.md).

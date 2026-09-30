@@ -2,7 +2,9 @@ package com.meridian.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meridian.domain.*;
+import com.meridian.observability.PaymentMetrics;
 import com.meridian.payment.*;
+import com.meridian.resilience.CorridorCircuitBreaker;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,7 +22,13 @@ import java.util.function.Supplier;
 /** Single-instance synthetic ledger. One monitor is held until every transaction commits. */
 @Service
 public class RehearsalBank {
-  public record Payment(String recipientId, Long amountMinor, String method, String note, String scenario) {}
+  public record Payment(String recipientId, Long amountMinor, String method, String note, String scenario, String corridor) {
+    @com.fasterxml.jackson.annotation.JsonCreator(mode = com.fasterxml.jackson.annotation.JsonCreator.Mode.PROPERTIES)
+    public Payment {}
+    public Payment(String recipientId, Long amountMinor, String method, String note, String scenario) {
+      this(recipientId, amountMinor, method, note, scenario, null);
+    }
+  }
   public record Limit(String category, Long limitMinor) {}
   public record Callback(String sessionId, String eventId, String paymentId, String status) {}
   private record Intent(String id, String room, String key, String payload, String status, String provider, long amount) {}
@@ -30,10 +38,14 @@ public class RehearsalBank {
   private final FixtureService fixture;
   private final Map<String, PaymentProvider> providers;
   private final String webhookSecret;
+  private final PaymentMetrics metrics;
+  private final CorridorCircuitBreaker breakers;
 
   public RehearsalBank(JdbcTemplate db, TransactionTemplate tx, ObjectMapper json, FixtureService fixture,
-    List<PaymentProvider> providers, @Value("${meridian.webhook.secret:}") String secret) {
+    List<PaymentProvider> providers, @Value("${meridian.webhook.secret:}") String secret,
+    PaymentMetrics metrics, CorridorCircuitBreaker breakers) {
     this.db=db; this.tx=tx; this.json=json; this.fixture=fixture; this.webhookSecret=secret;
+    this.metrics=metrics; this.breakers=breakers;
     this.providers=new HashMap<>(); providers.forEach(p -> this.providers.put(p.getProviderId(),p));
     db.execute("CREATE TABLE IF NOT EXISTS meridian_rooms (room VARCHAR(64) PRIMARY KEY, state_json CLOB NOT NULL)");
     db.execute("CREATE TABLE IF NOT EXISTS meridian_intents (payment_id VARCHAR(64) PRIMARY KEY, room VARCHAR(64) NOT NULL, client_key VARCHAR(100) NOT NULL, payload CLOB NOT NULL, phase VARCHAR(20) NOT NULL, provider VARCHAR(20) NOT NULL, amount BIGINT NOT NULL, UNIQUE(room,client_key))");
@@ -51,7 +63,13 @@ public class RehearsalBank {
     return decode(found.getFirst(),BankState.class);
   }
   private void save(String room,BankState state) { db.update("UPDATE meridian_rooms SET state_json=? WHERE room=?",encode(state),room); }
-  private void audit(String room,String type,String id,String provider) { db.update("INSERT INTO meridian_audit(room,event_json) VALUES(?,?)",room,encode(Map.of("type",type,"paymentId",id,"provider",provider,"timestamp",Instant.now().toString()))); }
+  private void audit(String room,String type,String id,String provider) { audit(room,type,id,provider,""); }
+  private void audit(String room,String type,String id,String provider,String corridor) {
+    var event=new LinkedHashMap<String,String>();
+    event.put("type",type); event.put("paymentId",id); event.put("provider",provider); event.put("timestamp",Instant.now().toString());
+    if(corridor!=null && !corridor.isBlank()) event.put("corridor",corridor);
+    db.update("INSERT INTO meridian_audit(room,event_json) VALUES(?,?)",room,encode(event));
+  }
   public synchronized BankState state(String room) { room(room); return atomic(()->read(room)); }
   public synchronized Map<String,Object> reset(String room) { room(room); return atomic(()->{
     db.update("DELETE FROM meridian_callbacks WHERE room=?",room); db.update("DELETE FROM meridian_intents WHERE room=?",room); db.update("DELETE FROM meridian_audit WHERE room=?",room); db.update("DELETE FROM meridian_rooms WHERE room=?",room);
@@ -70,9 +88,11 @@ public class RehearsalBank {
     check(p.note()==null || p.note().length()<=200,"Reference exceeds 200 characters");
     String scenario=p.scenario()==null?"success":p.scenario();
     check(Set.of("success","declined","unavailable","pending").contains(scenario),"Unknown simulation scenario");
-    return new Payment(p.recipientId(),p.amountMinor(),p.method(),p.note()==null?"":p.note(),scenario);
+    String corridor=p.corridor()==null||p.corridor().isBlank()?"UK":p.corridor().trim().toUpperCase(Locale.ROOT);
+    check(Set.of("UK","US","EU").contains(corridor),"Unknown corridor");
+    return new Payment(p.recipientId(),p.amountMinor(),p.method(),p.note()==null?"":p.note(),scenario,corridor);
   }
-  private String payload(Payment p) { return encode(List.of(p.recipientId(),p.amountMinor(),p.method(),p.note())); }
+  private String payload(Payment p) { return encode(List.of(p.recipientId(),p.amountMinor(),p.method(),p.note(),p.corridor())); }
   private long reserved(String room) { Long value=db.queryForObject("SELECT COALESCE(SUM(amount),0) FROM meridian_intents WHERE room=? AND phase IN ('submitting','pending')",Long.class,room); return value==null?0:value; }
   private Intent prepare(String room,String key,Payment p) {
     var state=read(room); var rows=intents("SELECT * FROM meridian_intents WHERE room=? AND client_key=?",room,key);
@@ -87,7 +107,7 @@ public class RehearsalBank {
     if(state.getBalance()-reserved(room)<p.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
     String id=UUID.randomUUID().toString(), provider=p.method().equals("card")?"adyen":"worldpay";
     db.update("INSERT INTO meridian_intents(payment_id,room,client_key,payload,phase,provider,amount) VALUES(?,?,?,?,?,?,?)",id,room,key,payload(p),"submitting",provider,p.amountMinor());
-    audit(room,"payment.prepared",id,provider);
+    audit(room,"payment.prepared",id,provider,p.corridor());
     return new Intent(id,room,key,payload(p),"prepared",provider,p.amountMinor());
   }
   private Map<String,Object> pending(String id) { return Map.of("ok",false,"error","Payment pending confirmation. Do not create another payment.","code","PAYMENT_PENDING","paymentId",id); }
@@ -96,6 +116,21 @@ public class RehearsalBank {
     return Map.of("ok",true,"state",state,"transaction",txn);
   }
   private Map<String,Object> fail(String code,String message) { return Map.of("ok",false,"code",code,"error",message); }
+  private Map<String,Object> degraded(String provider,String corridor) {
+    var body=new LinkedHashMap<String,Object>();
+    body.put("ok",false);
+    body.put("code","PROVIDER_DEGRADED");
+    body.put("provider",provider);
+    body.put("corridor",corridor);
+    body.put("eurOptionsEnabled",breakers.eurOptionsEnabled());
+    if("EU".equals(corridor)) {
+      body.put("fallbackCorridor","UK");
+      body.put("error","EUR options are disabled because this European provider circuit is open. Fall back to the UK corridor. No other provider was called and no debit was made.");
+    } else {
+      body.put("error","Provider circuit is open for this corridor. No other provider was called and no debit was made.");
+    }
+    return body;
+  }
   private Transaction debit(Intent intent,Payment p) {
     var state=read(intent.room()); check(state.getBalance()>=intent.amount(),"Insufficient balance for settlement");
     var recipient=fixture.getRecipient(p.recipientId());
@@ -110,14 +145,26 @@ public class RehearsalBank {
     if(intent.status().equals("completed")) return atomic(()->completed(intent));
     if(Set.of("pending","submitting").contains(intent.status())) return pending(intent.id());
     if(intent.status().equals("declined-final")) return fail("PAYMENT_DECLINED","Payment was declined by reconciliation");
-    PaymentProvider.Outcome outcome;
-    try { outcome=providers.get(intent.provider()).authorize(intent.id(),p.scenario(),"UK"); }
-    catch(RuntimeException e) { outcome=PaymentProvider.Outcome.PENDING; }
+    if(!breakers.allow(intent.provider(),p.corridor())) {
+      metrics.submission(intent.provider(),p.corridor(),"degraded");
+      return atomic(()->{
+        db.update("UPDATE meridian_intents SET phase='unavailable' WHERE payment_id=?",intent.id());
+        audit(room,"payment.degraded",intent.id(),intent.provider(),p.corridor());
+        return degraded(intent.provider(),p.corridor());
+      });
+    }
+    PaymentProvider.Outcome outcome; boolean ambiguous=false; long started=System.nanoTime();
+    try { outcome=providers.get(intent.provider()).authorize(intent.id(),p.scenario(),p.corridor()); }
+    catch(RuntimeException e) { outcome=PaymentProvider.Outcome.PENDING; ambiguous=true; }
+    long elapsed=System.nanoTime()-started;
+    // Unavailable is a confirmed miss before capture. A thrown failure is ambiguous: same key only, never the other provider.
+    breakers.record(intent.provider(),p.corridor(),ambiguous || outcome==PaymentProvider.Outcome.UNAVAILABLE);
+    metrics.observeAuthorization(intent.provider(),p.corridor(),outcome,ambiguous,elapsed);
     final var result=outcome;
     return atomic(()->{
       if(result==PaymentProvider.Outcome.SUCCESS) { debit(intent,p); return completed(intent); }
       String phase=result==PaymentProvider.Outcome.PENDING?"pending":result==PaymentProvider.Outcome.DECLINED?"declined":"unavailable";
-      db.update("UPDATE meridian_intents SET phase=? WHERE payment_id=?",phase,intent.id()); audit(room,"payment."+phase,intent.id(),intent.provider());
+      db.update("UPDATE meridian_intents SET phase=? WHERE payment_id=?",phase,intent.id()); audit(room,"payment."+phase,intent.id(),intent.provider(),p.corridor());
       if(result==PaymentProvider.Outcome.PENDING) return pending(intent.id());
       return fail(result==PaymentProvider.Outcome.DECLINED?"PAYMENT_DECLINED":"PROVIDER_UNAVAILABLE",result==PaymentProvider.Outcome.DECLINED?"Payment declined. No debit was made.":"Provider unavailable before authorization. No debit was made.");
     });
@@ -144,7 +191,7 @@ public class RehearsalBank {
       check(!rows.isEmpty(),"Unknown payment intent"); var intent=rows.getFirst(); check(intent.provider().equals(provider),"Callback provider mismatch");
       if(!Set.of("pending","submitting").contains(intent.status())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Payment already has a final outcome");
       if(event.status().equals("completed")) {
-        var tuple=decode(intent.payload(),List.class); var p=new Payment((String)tuple.get(0),((Number)tuple.get(1)).longValue(),(String)tuple.get(2),(String)tuple.get(3),"success"); debit(intent,p);
+        var tuple=decode(intent.payload(),List.class); String corridor=tuple.size()>4 && tuple.get(4)!=null?tuple.get(4).toString():"UK"; var p=new Payment((String)tuple.get(0),((Number)tuple.get(1)).longValue(),(String)tuple.get(2),(String)tuple.get(3),"success",corridor); debit(intent,p);
       } else { db.update("UPDATE meridian_intents SET phase='declined-final' WHERE payment_id=?",intent.id()); audit(intent.room(),"payment.declined",intent.id(),provider); }
       db.update("INSERT INTO meridian_callbacks(room,provider,event_id,payload_hash) VALUES(?,?,?,?)",event.sessionId(),provider,event.eventId(),hash);
       return Map.of("ok",true,"duplicate",false);

@@ -42,13 +42,14 @@ paths:
                 method: { type: string, enum: [card, bank] }
                 note: { type: string, maxLength: 200 }
                 scenario: { type: string, enum: [success, declined, unavailable, pending], default: success }
+                corridor: { type: string, enum: [UK, US, EU], default: UK, description: Optional simulated corridor. Amounts remain integer GBP pence. }
       responses:
         '200': { description: Completed with current state and receipt }
         '202': { description: Pending confirmation, no debit, funds reserved }
         '400': { description: Invalid request or insufficient available balance }
         '409': { description: Same key with changed business payload }
         '422': { description: Declined, no debit }
-        '503': { description: Simulated unavailable before authorization, no debit }
+        '503': { description: Simulated unavailable or PROVIDER_DEGRADED when that provider corridor circuit is open. No debit and no call to the other provider. }
   /budgets:
     patch:
       parameters: [{ $ref: '#/components/parameters/Room' }]
@@ -74,6 +75,11 @@ paths:
       parameters: [{ $ref: '#/components/parameters/Room' }]
       responses:
         '200': { description: Latest 100 synthetic audit events }
+  /corridors:
+    get:
+      description: Simulated Adyen and Worldpay circuit lanes for UK, US and EU. No session required. eurOptionsEnabled is false when either EU lane is open.
+      responses:
+        '200': { description: Corridor snapshot with GBP ledger currency and fallbackCorridor UK }
   /webhooks/{provider}:
     post:
       description: Synthetic HMAC callback. Disabled without MERIDIAN_WEBHOOK_SECRET. Signature is lowercase SHA256 HMAC over timestamp plus dot plus exact raw body. Five-minute skew maximum.

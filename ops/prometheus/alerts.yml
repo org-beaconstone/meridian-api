@@ -1,0 +1,42 @@
+groups:
+  - name: meridian-payment-slo
+    rules:
+      - alert: ScaStepUpSuccessRateLow
+        expr: |
+          (
+            sum by (corridor, provider) (rate(sca_step_up_success_total[5m]))
+            /
+            sum by (corridor, provider) (rate(sca_step_up_attempts_total[5m]))
+          ) < 0.92
+          and
+          sum by (corridor, provider) (increase(sca_step_up_attempts_total[5m])) >= 20
+        for: 5m
+        labels:
+          severity: critical
+          service: meridian-api
+          slo: sca-step-up
+        annotations:
+          summary: SCA step-up success rate is below 92%
+          description: >-
+            Sustained simulated SCA verification for {{ $labels.provider }} on {{ $labels.corridor }}
+            is below 92% over 5 minutes. This is a rehearsal signal, not a live vendor integration.
+
+      - alert: ProviderTimeoutsElevated
+        expr: |
+          (
+            sum by (corridor, provider) (rate(payment_provider_timeouts_total[5m]))
+            /
+            sum by (corridor, provider) (rate(payment_submissions_total[5m]))
+          ) > 0.015
+          and
+          sum by (corridor, provider) (increase(payment_submissions_total[5m])) >= 20
+        labels:
+          severity: critical
+          service: meridian-api
+          slo: provider-timeout
+        annotations:
+          summary: Provider timeouts exceed 1.5% over 5 minutes
+          description: >-
+            Simulated timeout ratio for {{ $labels.provider }} on {{ $labels.corridor }}
+            exceeded 1.5% across a 5-minute interval. The unavailable scenario counts as a timeout.
+            Meridian does not reroute the attempt to the other provider.

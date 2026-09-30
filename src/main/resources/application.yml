@@ -9,6 +9,8 @@ spring:
   h2:
     console:
       enabled: false
+  flyway:
+    enabled: false
 server:
   address: ${MERIDIAN_BIND:127.0.0.1}
   port: ${PORT:8080}

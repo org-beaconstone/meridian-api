@@ -22,6 +22,11 @@ public class ApiController {
     int status=code==null?200:switch(code) { case "PAYMENT_PENDING"->202; case "PAYMENT_DECLINED"->422; case "PROVIDER_UNAVAILABLE"->503; default->400; };
     return ResponseEntity.status(status).body(result);
   }
+  @PostMapping("/payments/auth") public ResponseEntity<?> authorize(@RequestHeader(value="X-Rehearsal-Session",required=false) String room,@RequestHeader(value="Idempotency-Key",required=false) String key,@RequestHeader(value="X-Trace-Id",required=false) String trace,@RequestBody RehearsalBank.Authorization body) {
+    var result=bank.authorize(room,key,trace,body); String code=(String)result.get("code");
+    int status=switch(code) { case "AUTHORIZED"->200; case "SOFT_DECLINE","HARD_DECLINE","SCA_CHALLENGE_FAILED"->422; case "AUTHORIZATION_AMBIGUOUS"->503; default->400; };
+    return ResponseEntity.status(status).body(result);
+  }
   @PostMapping("/webhooks/{provider}") public Object webhook(@PathVariable String provider,@RequestHeader(value="X-Webhook-Timestamp",required=false) String timestamp,@RequestHeader(value="X-Meridian-Signature",required=false) String signature,@RequestBody String raw) { return bank.webhook(provider,timestamp,signature,raw); }
   @ExceptionHandler(ResponseStatusException.class) public ResponseEntity<?> domainError(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).body(Map.of("ok",false,"error",Objects.requireNonNullElse(e.getReason(),"Request failed"),"code","HTTP_"+e.getStatusCode().value())); }
   @ExceptionHandler(HttpMessageNotReadableException.class) public ResponseEntity<?> jsonError() { return ResponseEntity.badRequest().body(Map.of("ok",false,"error","Invalid JSON request: integer amounts and known fields required","code","INVALID_JSON")); }

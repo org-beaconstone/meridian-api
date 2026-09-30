@@ -2,6 +2,7 @@ package com.meridian.resilience;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -43,11 +44,12 @@ public class CorridorCircuitBreaker {
     private final Clock clock;
     private final ConcurrentHashMap<Key, Lane> lanes = new ConcurrentHashMap<>();
 
+    @Autowired
     public CorridorCircuitBreaker(CircuitBreakerSettings settings) {
         this(settings, Clock.systemUTC());
     }
 
-    public CorridorCircuitBreaker(CircuitBreakerSettings settings, Clock clock) {
+    CorridorCircuitBreaker(CircuitBreakerSettings settings, Clock clock) {
         this.settings = settings;
         this.clock = clock;
     }

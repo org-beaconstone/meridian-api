@@ -1,6 +1,7 @@
 package com.meridian.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meridian.resilience.CorridorCircuitBreaker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,10 +41,14 @@ public class MeridianApiTest {
     @Autowired
     private ObjectMapper json;
 
+    @Autowired
+    private CorridorCircuitBreaker breakers;
+
     private static final String SECRET = "test-key-webhook-secret";
 
     @BeforeEach
     void clean() throws Exception {
+        breakers.reset();
         mvc.perform(post("/api/v1/reset").header("X-Rehearsal-Session", "test-clean"));
     }
 

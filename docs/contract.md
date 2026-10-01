@@ -23,3 +23,7 @@ Transaction `{id,reference,recipientId,name,category,amount,date,provider,method
 ## Deployment topology
 
 Java API serves `/api/v1`. Vite dev servers and production Nginx proxies expose same-origin `/api/v1` to clients. Web uses `VITE_API_BASE_URL=/api/v1` in connected builds; unset means existing explicitly labelled standalone simulation. Browser mobile companion lives in meridian-mobile/preview and calls the same API; it is not the native build. Native Swift/Kotlin clients use configurable base URL and shared session. Do not silently switch from server mode to local success on errors.
+
+## Version 2
+
+Provider-neutral payment methods and payment intents are specified in [contract-v2.md](contract-v2.md) and [openapi-v2.yaml](openapi-v2.yaml). The version 1 payloads in this document are unchanged.

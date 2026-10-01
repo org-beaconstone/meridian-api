@@ -1,0 +1,270 @@
+openapi: 3.0.3
+info:
+  title: Meridian rehearsal API v2
+  version: 2026.09.18-uk-us-1
+  description: |
+    Provider-neutral payment methods and payment intents for the fictional Meridian rehearsal.
+    Amounts are integer GBP pence via the legacy integer decoder. UK and US flows are fixed.
+    No live provider calls. See docs/contract-v2.md. Version 1 remains docs/openapi.yaml.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /api/v2/payment-methods:
+    get:
+      summary: Provider-neutral method catalog
+      parameters:
+        - name: corridor
+          in: query
+          required: false
+          schema: { type: string, enum: [UK, US] }
+      responses:
+        '200':
+          description: Catalog version, cache expiry, GBP integer currency metadata, and open method descriptors
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentMethodCatalog' }
+        '400':
+          description: Unknown corridor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v2/payment-intents:
+    post:
+      summary: Create or replay a payment intent
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateIntent' }
+      responses:
+        '200':
+          description: Succeeded. Resource status is succeeded and receipt is set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '202':
+          description: Requires action or still processing. No debit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400':
+          description: Invalid session, key, descriptor, amount, or method
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Stale catalog version or idempotency key reused with a different business payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Declined. Resource status is declined and no debit was made
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '503':
+          description: Unavailable before authorization. Retry only with the same idempotency key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+  /api/v2/payment-intents/{id}:
+    get:
+      summary: Authoritative payment intent lifecycle
+      parameters:
+        - { $ref: '#/components/parameters/Room' }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+      responses:
+        '200':
+          description: Current lifecycle, action payload, and signed return state. HTTP 200 for every known status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400':
+          description: Invalid or missing session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Unknown intent in this session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+  parameters:
+    Room:
+      name: X-Rehearsal-Session
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{3,64}$' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,100}$' }
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [ok, error, code]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        error: { type: string }
+        code: { type: string }
+    Currency:
+      type: object
+      additionalProperties: false
+      required: [code, minorUnitExponent, amountEncoding, decoder]
+      properties:
+        code: { type: string, enum: [GBP] }
+        minorUnitExponent: { type: integer, enum: [2] }
+        amountEncoding: { type: string, enum: [integer-minor] }
+        decoder: { type: string, enum: [legacy-integer] }
+    MethodDescriptor:
+      type: object
+      description: Open payment method descriptor. Clients ignore unknown fields and do not select a provider.
+      additionalProperties: true
+      required: [open, scheme, flow, methodId, amountEncoding, providerResolvedBy]
+      properties:
+        open: { type: boolean, enum: [true] }
+        scheme: { type: string, enum: [meridian.payment-method] }
+        flow: { type: string, enum: [fixed-uk-us] }
+        methodId: { type: string, enum: [card, bank] }
+        amountEncoding: { type: string, enum: [integer-minor] }
+        minMinor: { type: integer, minimum: 1 }
+        maxMinor: { type: integer, maximum: 1000000 }
+        providerResolvedBy: { type: string, enum: [server] }
+    PaymentMethod:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, corridors, descriptor]
+      properties:
+        id: { type: string, enum: [card, bank] }
+        displayName: { type: string }
+        corridors:
+          type: array
+          items: { type: string, enum: [UK, US] }
+        descriptor: { $ref: '#/components/schemas/MethodDescriptor' }
+    PaymentMethodCatalog:
+      type: object
+      additionalProperties: false
+      required: [catalogVersion, issuedAt, expiresAt, simulation, currency, corridors, methods]
+      properties:
+        catalogVersion: { type: string, enum: ['2026.09.18-uk-us-1'] }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        simulation: { type: boolean, enum: [true] }
+        currency: { $ref: '#/components/schemas/Currency' }
+        corridors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, flow]
+            properties:
+              code: { type: string, enum: [UK, US] }
+              flow: { type: string, enum: [fixed] }
+        methods:
+          type: array
+          items: { $ref: '#/components/schemas/PaymentMethod' }
+    CreateIntent:
+      type: object
+      additionalProperties: false
+      required: [recipientId, amountMinor, methodId, catalogVersion]
+      properties:
+        recipientId: { type: string }
+        amountMinor:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: Legacy integer decoder. JSON floats and numeric strings are rejected.
+        methodId: { type: string, enum: [card, bank] }
+        corridor: { type: string, enum: [UK, US], default: UK }
+        note: { type: string, maxLength: 200 }
+        scenario: { type: string, enum: [success, declined, unavailable, pending], default: success }
+        catalogVersion: { type: string, enum: ['2026.09.18-uk-us-1'] }
+        descriptor:
+          type: object
+          description: Optional open echo of the catalog descriptor. provider, providerId, and acquirer are rejected.
+          additionalProperties: true
+          properties:
+            methodId: { type: string, enum: [card, bank] }
+    Action:
+      type: object
+      additionalProperties: false
+      required: [type, payload]
+      properties:
+        type: { type: string, enum: [poll, await_webhook, retry_same_key] }
+        payload:
+          type: object
+          description: Open action payload. Clients ignore unknown fields.
+          additionalProperties: true
+          required: [intentId]
+          properties:
+            intentId: { type: string }
+            href: { type: string }
+            instruction: { type: string }
+            sameKeyRequired: { type: boolean }
+    ReturnState:
+      type: object
+      additionalProperties: false
+      required: [algorithm, payload, canonical, signature, verifiable]
+      properties:
+        algorithm: { type: string, enum: [HMAC-SHA256] }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [intentId, status, amountMinor, currency, methodId, corridor, catalogVersion]
+          properties:
+            intentId: { type: string }
+            status: { type: string, enum: [processing, requires_action, succeeded, declined, unavailable] }
+            amountMinor: { type: integer }
+            currency: { type: string, enum: [GBP] }
+            methodId: { type: string, enum: [card, bank] }
+            corridor: { type: string, enum: [UK, US] }
+            catalogVersion: { type: string }
+        canonical: { type: string, description: Exact JSON signed by signature }
+        signature:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+        verifiable: { type: boolean }
+    Receipt:
+      type: object
+      additionalProperties: false
+      required: [transactionId, reference, recipientId, amountMinor, method, status]
+      properties:
+        transactionId: { type: string }
+        reference: { type: string }
+        recipientId: { type: string }
+        amountMinor: { type: integer }
+        method: { type: string, enum: [card, bank] }
+        status: { type: string, enum: [completed] }
+    PaymentIntent:
+      type: object
+      additionalProperties: false
+      required: [id, status, authoritative, simulation, amountMinor, currency, methodId, corridor, catalogVersion, action, returnState, receipt, code, error]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [processing, requires_action, succeeded, declined, unavailable] }
+        authoritative: { type: boolean, enum: [true] }
+        simulation: { type: boolean, enum: [true] }
+        amountMinor: { type: integer }
+        currency: { type: string, enum: [GBP] }
+        methodId: { type: string, enum: [card, bank] }
+        corridor: { type: string, enum: [UK, US] }
+        catalogVersion: { type: string, enum: ['2026.09.18-uk-us-1'] }
+        action:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Action' }]
+        returnState: { $ref: '#/components/schemas/ReturnState' }
+        receipt:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/Receipt' }]
+        code: { type: string, nullable: true }
+        error: { type: string, nullable: true }

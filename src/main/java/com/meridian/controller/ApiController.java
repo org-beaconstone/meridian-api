@@ -3,8 +3,6 @@ import com.meridian.domain.*;
 import com.meridian.service.*;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
-import org.springframework.http.converter.HttpMessageNotReadableException;
 import java.util.*;
 @RestController
 @RequestMapping("/api/v1")
@@ -23,6 +21,4 @@ public class ApiController {
     return ResponseEntity.status(status).body(result);
   }
   @PostMapping("/webhooks/{provider}") public Object webhook(@PathVariable String provider,@RequestHeader(value="X-Webhook-Timestamp",required=false) String timestamp,@RequestHeader(value="X-Meridian-Signature",required=false) String signature,@RequestBody String raw) { return bank.webhook(provider,timestamp,signature,raw); }
-  @ExceptionHandler(ResponseStatusException.class) public ResponseEntity<?> domainError(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).body(Map.of("ok",false,"error",Objects.requireNonNullElse(e.getReason(),"Request failed"),"code","HTTP_"+e.getStatusCode().value())); }
-  @ExceptionHandler(HttpMessageNotReadableException.class) public ResponseEntity<?> jsonError() { return ResponseEntity.badRequest().body(Map.of("ok",false,"error","Invalid JSON request: integer amounts and known fields required","code","INVALID_JSON")); }
 }

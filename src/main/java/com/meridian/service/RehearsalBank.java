@@ -1,8 +1,10 @@
 package com.meridian.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meridian.domain.*;
-import com.meridian.payment.*;
+import com.meridian.payment.MethodCatalog;
+import com.meridian.payment.PaymentProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,6 +25,9 @@ public class RehearsalBank {
   public record Payment(String recipientId, Long amountMinor, String method, String note, String scenario) {}
   public record Limit(String category, Long limitMinor) {}
   public record Callback(String sessionId, String eventId, String paymentId, String status) {}
+  public record IntentRequest(String recipientId, Long amountMinor, String descriptor, String corridor, String note, String catalogVersion, String scenario) {}
+  public record StoredIntent(String recipientId, long amountMinor, String method, String note, String descriptor, String corridor, String catalogVersion) {}
+  public record IntentResult(int httpStatus, Map<String,Object> body) {}
   private record Intent(String id, String room, String key, String payload, String status, String provider, long amount) {}
   private final JdbcTemplate db;
   private final TransactionTemplate tx;
@@ -143,11 +148,114 @@ public class RehearsalBank {
       var rows=intents("SELECT * FROM meridian_intents WHERE payment_id=? AND room=?",event.paymentId(),event.sessionId());
       check(!rows.isEmpty(),"Unknown payment intent"); var intent=rows.getFirst(); check(intent.provider().equals(provider),"Callback provider mismatch");
       if(!Set.of("pending","submitting").contains(intent.status())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Payment already has a final outcome");
-      if(event.status().equals("completed")) {
-        var tuple=decode(intent.payload(),List.class); var p=new Payment((String)tuple.get(0),((Number)tuple.get(1)).longValue(),(String)tuple.get(2),(String)tuple.get(3),"success"); debit(intent,p);
-      } else { db.update("UPDATE meridian_intents SET phase='declined-final' WHERE payment_id=?",intent.id()); audit(intent.room(),"payment.declined",intent.id(),provider); }
+      if(event.status().equals("completed")) debit(intent,paymentFromStored(intent.payload()));
+      else { db.update("UPDATE meridian_intents SET phase='declined-final' WHERE payment_id=?",intent.id()); audit(intent.room(),"payment.declined",intent.id(),provider); }
       db.update("INSERT INTO meridian_callbacks(room,provider,event_id,payload_hash) VALUES(?,?,?,?)",event.sessionId(),provider,event.eventId(),hash);
       return Map.of("ok",true,"duplicate",false);
     });
+  }
+  private Payment paymentFromStored(String payload) {
+    try {
+      JsonNode node=json.readTree(payload);
+      if(node.isArray()) return new Payment(node.get(0).asText(),node.get(1).longValue(),node.get(2).asText(),node.get(3).asText(),"success");
+      return new Payment(node.path("recipientId").asText(),node.path("amountMinor").longValue(),node.path("method").asText(),node.path("note").asText(""),"success");
+    } catch(Exception e) { throw new IllegalStateException(e); }
+  }
+  public synchronized IntentResult createIntent(String room,String key,IntentRequest input) {
+    room(room); check(key!=null && key.matches("[A-Za-z0-9_-]{1,100}"),"Invalid Idempotency-Key");
+    check(input!=null,"Invalid payment intent");
+    check(input.amountMinor()!=null && input.amountMinor()>=1 && input.amountMinor()<=1000000,"Amount must be integer pence from 1 to 1000000");
+    check(input.recipientId()!=null && fixture.getRecipient(input.recipientId())!=null,"Unknown recipient");
+    check(input.note()==null || input.note().length()<=200,"Reference exceeds 200 characters");
+    check(input.descriptor()!=null && input.descriptor().matches("[a-z0-9_]{1,64}"),"Unknown payment method descriptor");
+    check("UK".equals(input.corridor()) || "US".equals(input.corridor()),"Unsupported corridor");
+    check(input.catalogVersion()!=null && input.catalogVersion().matches("[A-Za-z0-9._-]{1,64}"),"Catalog version is required");
+    String scenario=input.scenario()==null?"success":input.scenario();
+    check(Set.of("success","declined","unavailable","pending").contains(scenario),"Unknown simulation scenario");
+    String note=input.note()==null?"":input.note();
+    // Persist the intent, then call the single resolved provider. Never fall back after an ambiguous outcome.
+    Intent intent=atomic(()->prepareIntent(room,key,input,note));
+    if(Set.of("completed","pending","submitting","declined-final").contains(intent.status())) return atomic(()->intentResult(intent));
+    PaymentProvider provider=providers.get(intent.provider());
+    PaymentProvider.Outcome outcome;
+    try { outcome=provider==null?PaymentProvider.Outcome.PENDING:provider.authorize(intent.id(),scenario,input.corridor()); }
+    catch(RuntimeException e) { outcome=PaymentProvider.Outcome.PENDING; }
+    final var result=outcome;
+    return atomic(()->{
+      if(result==PaymentProvider.Outcome.SUCCESS) { debit(intent,paymentFromStored(intent.payload())); return intentResult(reload(intent.id())); }
+      String phase=result==PaymentProvider.Outcome.PENDING?"pending":result==PaymentProvider.Outcome.DECLINED?"declined":"unavailable";
+      db.update("UPDATE meridian_intents SET phase=? WHERE payment_id=?",phase,intent.id());
+      audit(room,"payment."+phase,intent.id(),intent.provider());
+      return intentResult(reload(intent.id()));
+    });
+  }
+  public synchronized Map<String,Object> readIntent(String room,String id) {
+    room(room); check(id!=null && id.matches("[A-Za-z0-9_-]{1,64}"),"Invalid payment intent id");
+    return atomic(()->{
+      var rows=intents("SELECT * FROM meridian_intents WHERE payment_id=? AND room=?",id,room);
+      if(rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Unknown payment intent");
+      JsonNode node; try { node=json.readTree(rows.getFirst().payload()); } catch(Exception e) { throw new IllegalStateException(e); }
+      if(!node.isObject()) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Unknown payment intent");
+      return intentView(rows.getFirst());
+    });
+  }
+  private Intent prepareIntent(String room,String key,IntentRequest input,String note) {
+    var state=read(room); var rows=intents("SELECT * FROM meridian_intents WHERE room=? AND client_key=?",room,key);
+    if(!rows.isEmpty()) {
+      var old=rows.getFirst();
+      if(!sameBusiness(old,input,note)) throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key belongs to a different payment");
+      if(Set.of("completed","pending","submitting","declined-final").contains(old.status())) return old;
+      if(state.getBalance()-reserved(room)<input.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
+      db.update("UPDATE meridian_intents SET phase='submitting' WHERE payment_id=?",old.id());
+      return new Intent(old.id(),room,key,old.payload(),"prepared",old.provider(),old.amount());
+    }
+    if(!MethodCatalog.VERSION.equals(input.catalogVersion())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Payment method catalog is stale");
+    var resolved=MethodCatalog.resolve(input.descriptor());
+    if(resolved==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Unknown payment method descriptor");
+    if(state.getBalance()-reserved(room)<input.amountMinor()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Insufficient available balance");
+    String id=UUID.randomUUID().toString();
+    String payload=encode(new StoredIntent(input.recipientId(),input.amountMinor(),resolved.legacyMethod(),note,resolved.descriptor(),input.corridor(),input.catalogVersion()));
+    db.update("INSERT INTO meridian_intents(payment_id,room,client_key,payload,phase,provider,amount) VALUES(?,?,?,?,?,?,?)",id,room,key,payload,"submitting",resolved.providerId(),input.amountMinor());
+    audit(room,"payment.prepared",id,resolved.providerId());
+    return new Intent(id,room,key,payload,"prepared",resolved.providerId(),input.amountMinor());
+  }
+  private boolean sameBusiness(Intent old,IntentRequest input,String note) {
+    try {
+      JsonNode node=json.readTree(old.payload()); if(!node.isObject()) return false;
+      StoredIntent stored=json.treeToValue(node,StoredIntent.class);
+      return stored.recipientId().equals(input.recipientId()) && stored.amountMinor()==input.amountMinor() && stored.descriptor().equals(input.descriptor()) && stored.corridor().equals(input.corridor()) && stored.note().equals(note) && stored.catalogVersion().equals(input.catalogVersion());
+    } catch(Exception e) { return false; }
+  }
+  private Intent reload(String id) { return intents("SELECT * FROM meridian_intents WHERE payment_id=?",id).getFirst(); }
+  private IntentResult intentResult(Intent intent) { var body=intentView(intent); return new IntentResult(httpFor((String)body.get("status")),body); }
+  private int httpFor(String status) { return switch(status) { case "succeeded" -> 200; case "requires_action" -> 202; case "declined" -> 422; case "failed" -> 503; default -> 400; }; }
+  private Map<String,Object> intentView(Intent intent) {
+    StoredIntent stored=decode(intent.payload(),StoredIntent.class); String phase=intent.status();
+    String status=switch(phase) { case "completed" -> "succeeded"; case "pending","submitting","prepared" -> "requires_action"; case "declined","declined-final" -> "declined"; default -> "failed"; };
+    String reason=switch(phase) {
+      case "completed" -> "Payment completed.";
+      case "pending","submitting","prepared" -> "Payment pending confirmation. Do not create another payment.";
+      case "declined" -> "Payment declined. No debit was made.";
+      case "declined-final" -> "Payment was declined by reconciliation";
+      default -> "Provider unavailable before authorization. No debit was made.";
+    };
+    var body=new LinkedHashMap<String,Object>();
+    body.put("id",intent.id()); body.put("status",status); body.put("authoritative",true); body.put("simulation",true);
+    body.put("amountMinor",intent.amount()); body.put("currency","GBP"); body.put("descriptor",stored.descriptor());
+    body.put("corridor",stored.corridor()); body.put("catalogVersion",stored.catalogVersion());
+    body.put("action","requires_action".equals(status)?Map.of("type","await_confirmation","payload",Map.of("intentId",intent.id(),"simulation",true,"clientAction","poll")):null);
+    body.put("statusReason",reason);
+    if("succeeded".equals(status)) {
+      var state=read(intent.room()); var txn=state.getTransactions().stream().filter(t->t.getId().equals(intent.id())).findFirst().orElseThrow();
+      body.put("receipt",receipt(txn)); body.put("balanceMinor",state.getBalance());
+    }
+    return body;
+  }
+  private Map<String,Object> receipt(Transaction txn) {
+    var body=new LinkedHashMap<String,Object>();
+    body.put("id",txn.getId()); body.put("reference",txn.getReference()); body.put("recipientId",txn.getRecipientId());
+    body.put("name",txn.getName()); body.put("category",txn.getCategory()); body.put("amountMinor",txn.getAmount());
+    body.put("date",txn.getDate()); body.put("method",txn.getMethod()); body.put("status",txn.getStatus()); body.put("note",txn.getNote());
+    return body;
   }
 }

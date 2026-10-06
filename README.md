@@ -46,6 +46,8 @@ See [contract](docs/contract.md). Each client sends `X-Rehearsal-Session`; payme
 
 The server persists its own payment-intent ID before invoking the provider port. Known declined/unavailable simulations can retry with the same client key. Same key with changed business payload is rejected. Pending/submitting intents reserve spending capacity and cannot be resent blindly. Signed webhook completion appends the transaction and debits once. Reset clears only the selected room. `/events` exposes the latest synthetic audit entries.
 
+`/api/v2/payment-methods` publishes the open UK and US method catalog (version, expiry, GBP minor-unit metadata, descriptors). `/api/v2/payment-intents` creates and reads intents whose lifecycle status is authoritative. Responses include an action payload when the client must wait, and a simulation HMAC return state over that snapshot. Descriptor resolution stays on the server: card still settles through Adyen and bank through Worldpay, with no fallback. v1 routes, integer pence decoding, and the web state contract are unchanged. See [contract v2](docs/contract-v2.md).
+
 ## Synthetic webhooks
 
 Disabled unless `MERIDIAN_WEBHOOK_SECRET` is set. Never use a production provider secret. The test signature is HMAC-SHA256 over `timestamp + '.' + exact raw body`, with a five-minute window. It is a Meridian simulation protocol, not either vendor's real signing protocol. Create a pending intent before sending a completion callback. See [webhook helper](scripts/webhook.py).

@@ -72,7 +72,7 @@ class PaymentIntentContractTest {
 
     @Test
     void ukCardSucceedsThroughAdyenWithoutExposingProvider() throws Exception {
-        MvcResult result = post("uk-card", "key-uk-card", intent("md_card", "UK", 2599, "success"));
+        MvcResult result = submit("uk-card", "key-uk-card", intent("md_card", "UK", 2599, "success"));
         assertEquals(200, result.getResponse().getStatus());
         Map<String, Object> body = body(result);
         assertEquals("succeeded", body.get("status"));
@@ -93,7 +93,7 @@ class PaymentIntentContractTest {
 
     @Test
     void usBankSucceedsThroughWorldpayWithoutExposingProvider() throws Exception {
-        MvcResult result = post("us-bank", "key-us-bank", intent("md_bank", "US", 1000, "success"));
+        MvcResult result = submit("us-bank", "key-us-bank", intent("md_bank", "US", 1000, "success"));
         assertEquals(200, result.getResponse().getStatus());
         Map<String, Object> body = body(result);
         assertEquals("md_bank", body.get("descriptor"));
@@ -123,7 +123,7 @@ class PaymentIntentContractTest {
         mvc.perform(post("/api/v2/payment-intents").header("X-Rehearsal-Session", "open-desc").header("Idempotency-Key", "k")
                 .contentType(MediaType.APPLICATION_JSON).content(intent("md_future", "UK", 100, "success")))
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("Unknown payment method descriptor"));
-        mvc.perform(post("/api/v2/payment-intents").header("X-Rehearsal-Session", "eu").header("Idempotency-Key", "k")
+        mvc.perform(post("/api/v2/payment-intents").header("X-Rehearsal-Session", "eu-corridor").header("Idempotency-Key", "k")
                 .contentType(MediaType.APPLICATION_JSON).content(intent("md_card", "EU", 100, "success")))
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("Unsupported corridor"));
         mvc.perform(post("/api/v2/payment-intents").header("X-Rehearsal-Session", "stale").header("Idempotency-Key", "k")
@@ -133,10 +133,10 @@ class PaymentIntentContractTest {
 
     @Test
     void idempotentReplayDoesNotDebitTwiceAndMismatchConflicts() throws Exception {
-        MvcResult first = post("idem", "same-key", intent("md_card", "UK", 1500, "success"));
+        MvcResult first = submit("idem", "same-key", intent("md_card", "UK", 1500, "success"));
         assertEquals(200, first.getResponse().getStatus());
         String id = (String) body(first).get("id");
-        MvcResult second = post("idem", "same-key", intent("md_card", "UK", 1500, "success"));
+        MvcResult second = submit("idem", "same-key", intent("md_card", "UK", 1500, "success"));
         assertEquals(200, second.getResponse().getStatus());
         assertEquals(id, body(second).get("id"));
         assertEquals(OPENING - 1500, ((Number) body(second).get("balanceMinor")).longValue());
@@ -147,7 +147,7 @@ class PaymentIntentContractTest {
 
     @Test
     void pendingActionIsPolledThenWebhookCompletesOnce() throws Exception {
-        MvcResult created = post("pend", "pend-key", intent("md_card", "UK", 5000, "pending"));
+        MvcResult created = submit("pend", "pend-key", intent("md_card", "UK", 5000, "pending"));
         assertEquals(202, created.getResponse().getStatus());
         Map<String, Object> pending = body(created);
         assertEquals("requires_action", pending.get("status"));
@@ -179,27 +179,27 @@ class PaymentIntentContractTest {
 
     @Test
     void declinedCanRetrySameKeyAndUnavailableDoesNotChangeProvider() throws Exception {
-        MvcResult declined = post("dec", "dec-key", intent("md_card", "UK", 2000, "declined"));
+        MvcResult declined = submit("dec", "dec-key", intent("md_card", "UK", 2000, "declined"));
         assertEquals(422, declined.getResponse().getStatus());
         assertEquals("declined", body(declined).get("status"));
         assertSigned(body(declined));
-        MvcResult retried = post("dec", "dec-key", intent("md_card", "UK", 2000, "success"));
+        MvcResult retried = submit("dec", "dec-key", intent("md_card", "UK", 2000, "success"));
         assertEquals(200, retried.getResponse().getStatus());
         assertEquals(body(declined).get("id"), body(retried).get("id"));
         assertLedger("dec", (String) body(retried).get("id"), "adyen", OPENING - 2000);
 
-        MvcResult failed = post("unavail", "unavail-key", intent("md_bank", "US", 2000, "unavailable"));
+        MvcResult failed = submit("unavail", "unavail-key", intent("md_bank", "US", 2000, "unavailable"));
         assertEquals(503, failed.getResponse().getStatus());
         assertEquals("failed", body(failed).get("status"));
         mvc.perform(get("/api/v1/state").header("X-Rehearsal-Session", "unavail")).andExpect(jsonPath("$.balance").value((int) OPENING));
-        MvcResult recovered = post("unavail", "unavail-key", intent("md_bank", "US", 2000, "success"));
+        MvcResult recovered = submit("unavail", "unavail-key", intent("md_bank", "US", 2000, "success"));
         assertEquals(200, recovered.getResponse().getStatus());
         assertLedger("unavail", (String) body(recovered).get("id"), "worldpay", OPENING - 2000);
     }
 
     @Test
     void readsStayInsideTheSessionAndV1ContractStillDebits() throws Exception {
-        MvcResult created = post("room-a", "k", intent("md_card", "UK", 100, "success"));
+        MvcResult created = submit("room-a", "k", intent("md_card", "UK", 100, "success"));
         String id = (String) body(created).get("id");
         mvc.perform(get("/api/v2/payment-intents/" + id).header("X-Rehearsal-Session", "room-b")).andExpect(status().isNotFound());
         mvc.perform(get("/api/v2/payment-intents/missing-intent").header("X-Rehearsal-Session", "room-a")).andExpect(status().isNotFound());
@@ -215,24 +215,24 @@ class PaymentIntentContractTest {
 
     @Test
     void pendingReservationBlocksASecondSpendAndResetClearsTheKey() throws Exception {
-        post("reserve", "hold", intent("md_card", "UK", 800000, "pending"));
+        submit("reserve", "hold", intent("md_card", "UK", 800000, "pending"));
         mvc.perform(post("/api/v1/payments").header("X-Rehearsal-Session", "reserve").header("Idempotency-Key", "other")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"recipientId\":\"birch-bloom\",\"amountMinor\":800000,\"method\":\"bank\",\"scenario\":\"success\"}"))
             .andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/state").header("X-Rehearsal-Session", "reserve")).andExpect(jsonPath("$.balance").value((int) OPENING));
 
-        post("reset-me", "reuse", intent("md_card", "UK", 100, "success"));
+        submit("reset-me", "reuse", intent("md_card", "UK", 100, "success"));
         mvc.perform(post("/api/v1/reset").header("X-Rehearsal-Session", "reset-me")).andExpect(status().isOk());
-        MvcResult again = post("reset-me", "reuse", intent("md_bank", "US", 200, "success"));
+        MvcResult again = submit("reset-me", "reuse", intent("md_bank", "US", 200, "success"));
         assertEquals(200, again.getResponse().getStatus());
         assertEquals(OPENING - 200, ((Number) body(again).get("balanceMinor")).longValue());
     }
 
     @Test
     void reconciliationDeclineStaysTerminal() throws Exception {
-        MvcResult created = post("final", "final-key", intent("md_card", "UK", 2500, "pending"));
+        MvcResult created = submit("final", "final-key", intent("md_card", "UK", 2500, "pending"));
         webhook("final", (String) body(created).get("id"), "evt-no", "declined", "adyen");
-        MvcResult replay = post("final", "final-key", intent("md_card", "UK", 2500, "success"));
+        MvcResult replay = submit("final", "final-key", intent("md_card", "UK", 2500, "success"));
         assertEquals(422, replay.getResponse().getStatus());
         assertEquals("declined", body(replay).get("status"));
         assertEquals("Payment was declined by reconciliation", body(replay).get("statusReason"));
@@ -241,7 +241,7 @@ class PaymentIntentContractTest {
 
     @Test
     void changedStatusDoesNotMatchTheSignedReturnState() throws Exception {
-        Map<String, Object> body = body(post("sig", "sig-key", intent("md_card", "UK", 100, "success")));
+        Map<String, Object> body = body(submit("sig", "sig-key", intent("md_card", "UK", 100, "success")));
         assertSigned(body);
         body.put("status", "failed");
         String forged = canonical(body, (String) body.get("issuedAt"));
@@ -257,7 +257,7 @@ class PaymentIntentContractTest {
                 int n = i;
                 pool.submit(() -> {
                     try {
-                        MvcResult result = post("race", "race-" + n, intent("md_card", "UK", 800000, "success"));
+                        MvcResult result = submit("race", "race-" + n, intent("md_card", "UK", 800000, "success"));
                         if (result.getResponse().getStatus() == 200) succeeded.incrementAndGet();
                     } catch (Exception ignored) {
                         // The losing writer is reported through HTTP status.
@@ -286,7 +286,7 @@ class PaymentIntentContractTest {
         assertTrue(found);
     }
 
-    private MvcResult post(String session, String key, String payload) throws Exception {
+    private MvcResult submit(String session, String key, String payload) throws Exception {
         return mvc.perform(post("/api/v2/payment-intents")
             .header("X-Rehearsal-Session", session)
             .header("Idempotency-Key", key)
